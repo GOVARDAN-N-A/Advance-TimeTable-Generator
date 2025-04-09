@@ -54,10 +54,8 @@ import java.sql.*;
 import java.util.*;
 
 public class TimeTableGeneratorUI extends Application {
-
-    // Constants (remain the same)
-    private static final int PERIODS_PER_DAY = 8;
     private static final int DAYS_PER_WEEK = 5;
+    private static final int PERIODS_PER_DAY = 8; // Assuming 8 periods + breaks
     private static final int TOTAL_PERIODS_PER_WEEK = PERIODS_PER_DAY * DAYS_PER_WEEK; // 40
     private static final List<String> DAYS_OF_WEEK = Arrays.asList("Monday", "Tuesday", "Wednesday", "Thursday", "Friday");
     private static final String PRIMARY_COLOR = "#2C3E50";
@@ -70,6 +68,8 @@ public class TimeTableGeneratorUI extends Application {
     private static final String BORDER_COLOR = "#BDC3C7";
     private static final String THEORY_COLOR = "#D5F5E3";
     private static final String LAB_COLOR = "#D4E6F1";
+    private static final String BREAK_COLOR = "#F8F9FA"; // Light grey for breaks
+    private static final String HEADER_COLOR = "#006A6A"; // Teal blue
 
     // Global staff schedule for collision avoidance across years/sections
     private final Map<String, Set<String>> globalStaffSchedule = new HashMap<>();
@@ -81,8 +81,8 @@ public class TimeTableGeneratorUI extends Application {
     // Each year will have its own subject input container and list.
     private final Map<String, VBox> subjectsContainerMap = new HashMap<>();
     private final Map<String, ObservableList<SubjectRow>> subjectRowsMap = new HashMap<>();
-    private TextField academicYearField;
     private final Map<String, TextField> academicYearFields = new HashMap<>();
+    private final Map<String, Set<String>> globalStaffSectionMap = new HashMap<>();
 
     // UI nodes for the results area.
     // We will create one tab per (year, section)
@@ -95,6 +95,9 @@ public class TimeTableGeneratorUI extends Application {
 
     private Node currentTimetableContainer;
     private TableView<SubjectSummary> currentSummaryTable;
+
+    // Store generated schedules
+    private final Map<String, Map<String, TimeTableGenerator.Schedule>> generatedSchedules = new HashMap<>();
 
     // Database connection
     private void connectToDatabase() {
@@ -114,7 +117,7 @@ public class TimeTableGeneratorUI extends Application {
 
     @Override
     public void start(Stage primaryStage) {
-         connectToDatabase();
+        connectToDatabase();
         primaryStage.setTitle("TimeTable Generator Pro");
         primaryStage.getIcons().add(new Image("file:src/main/resources/logo.png"));
 
@@ -142,7 +145,7 @@ public class TimeTableGeneratorUI extends Application {
         GridPane emptyGrid = createEmptyTimetableGrid();
         Label emptyFitnessLabel = new Label("Fitness: N/A");
         TableView<SubjectSummary> emptySummaryTable = createSubjectSummaryTable();
-        Tab emptyTab = new Tab("Empty Timetable", createTimetableTabContent("Empty Timetable", emptyGrid, emptyFitnessLabel, emptySummaryTable));
+        Tab emptyTab = new Tab("Empty Timetable", createTimetableTabContent("Empty Timetable", "N/A", emptyGrid, emptyFitnessLabel, emptySummaryTable));
         emptyTab.setClosable(false);
         resultTabs.getTabs().add(emptyTab);
 
@@ -178,25 +181,26 @@ public class TimeTableGeneratorUI extends Application {
 
         iconBar.getChildren().addAll(
                 createIconWithLabel("file:src/main/resources/gear-icon.png", "Generate", e -> generateTimetables()),
-                createIconWithLabel("file:src/main/resources/database-icon.png", "Save", e -> saveToDatabase()),
-                createIconWithLabel("file:src/main/resources/excel-icon.png", "Export Excel", e -> exportToExcel()),
-                createIconWithLabel("file:src/main/resources/print-icon.png", "Print", e -> {
+                createIconWithLabel("file:src/main/resources/database-icon.png", "Save Input", e -> saveToDatabase()), // Renamed to specify saving input
+                createIconWithLabel("file:src/main/resources/database-icon.png", "Save Timetable", e -> saveTimetablesToDatabase()), // Added new button for saving generated timetable
+                createIconWithLabel("file:src/main/resources/excel-icon.png", "Export Summary", e -> exportToExcel()), // Renamed to specify exporting summary
+                createIconWithLabel("file:src/main/resources/excel-icon.png", "Export Timetables", e -> exportTimetablesToExcel()), // Added new button for exporting full timetable
+                createIconWithLabel("file:src/main/resources/print-icon.png", "Print Current", e -> {
                     if (currentTimetableContainer != null) {
                         printNode(currentTimetableContainer);
                     } else {
                         showAlert("Print Error", "No timetable to print!", Alert.AlertType.WARNING);
                     }
                 }),
-                createIconWithLabel("file:src/main/resources/staff-icon.png", "Staff TimeTable", e -> exportToExcel()),
+                createIconWithLabel("file:src/main/resources/staff-icon.png", "Staff TimeTable", e -> showStaffTimetable()), // Updated staff timetable action
 
                 createIconWithLabel("file:src/main/resources/help-icon.png", "Help", e -> showFullHelpDialog())
 
-                );
+        );
 
         header.getChildren().addAll(titleBox, iconBar);
         return header;
     }
-
 
 
     private void showFullHelpDialog() {
@@ -206,13 +210,17 @@ public class TimeTableGeneratorUI extends Application {
 
         StringBuilder content = new StringBuilder();
         content.append("🔹 **How to Use:**\n")
+                .append("• Input subject details for each year and section.\n")
                 .append("• Click 'Generate' to auto-create optimized timetables.\n")
-                .append("• Use 'Save' to store the result into the database.\n")
-                .append("• 'Print' lets you print the timetable in landscape mode.\n")
-                .append("• 'Export' saves the subject-staff summary as Excel.\n\n")
+                .append("• Use 'Save Input' to store the subject details into the database.\n")
+                .append("• Use 'Save Timetable' to store the generated timetables into the database.\n")
+                .append("• 'Export Summary' saves the subject-staff summary as Excel.\n")
+                .append("• 'Export Timetables' saves all generated timetables to Excel.\n")
+                .append("• 'Print Current' lets you print the currently viewed timetable.\n")
+                .append("• 'Staff Timetable' allows you to view the schedule for a specific staff member.\n\n")
                 .append("🔹 **About:**\n")
                 .append("• Developed for M.I.E.T Engineering College - Dept. of CSE.\n")
-                .append("• Version 1.0 | Powered by JavaFX & Apache POI.\n\n")
+                .append("• Version 2.4 2025 | Powered by JavaFX & Apache POI.\n\n")
                 .append("🔹 **Support:**\n")
                 .append("• For technical help, contact: timetable-support@miet.edu\n")
                 .append("• Or visit the department office during working hours.");
@@ -395,6 +403,72 @@ public class TimeTableGeneratorUI extends Application {
         return container;
     }
 
+    // --- NEW METHOD: Save generated timetables to database ---
+    private void saveTimetablesToDatabase() {
+        // Create table for generated timetables if it doesn't exist
+        String createTableQuery = """
+        CREATE TABLE IF NOT EXISTS generated_timetables (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            year TEXT NOT NULL,
+            section TEXT NOT NULL,
+            day TEXT NOT NULL,
+            period_index INTEGER NOT NULL,
+            subject_code TEXT,
+            staff_name TEXT,
+            UNIQUE(year, section, day, period_index)
+        );
+        """;
+
+        String insertQuery = """
+        INSERT INTO generated_timetables (year, section, day, period_index, subject_code, staff_name)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(year, section, day, period_index) DO UPDATE SET
+            subject_code = excluded.subject_code,
+            staff_name = excluded.staff_name;
+        """;
+
+        try (Statement createStatement = connection.createStatement()) {
+            // Drop the table first to ensure a fresh start with new generation
+            createStatement.execute("DROP TABLE IF EXISTS generated_timetables;");
+            createStatement.execute(createTableQuery);
+
+            try (PreparedStatement statement = connection.prepareStatement(insertQuery)) {
+                for (Map.Entry<String, Map<String, TimeTableGenerator.Schedule>> yearEntry : generatedSchedules.entrySet()) {
+                    String year = yearEntry.getKey();
+                    for (Map.Entry<String, TimeTableGenerator.Schedule> sectionEntry : yearEntry.getValue().entrySet()) {
+                        String section = sectionEntry.getKey();
+                        TimeTableGenerator.Schedule schedule = sectionEntry.getValue();
+
+                        for (int dayIndex = 0; dayIndex < DAYS_OF_WEEK.size(); dayIndex++) {
+                            String day = DAYS_OF_WEEK.get(dayIndex);
+                            List<String> daySchedule = schedule.getTimetable().get(day);
+
+                            if (daySchedule != null) {
+                                for (int periodIndex = 0; periodIndex < daySchedule.size(); periodIndex++) {
+                                    String subjectName = daySchedule.get(periodIndex);
+                                    String subjectCode = (subjectName != null) ? schedule.getSubjectCodeMap().get(subjectName) : null;
+                                    String staffName = (subjectName != null) ? schedule.getSubjectStaffMap().get(subjectName) : null;
+
+                                    statement.setString(1, year);
+                                    statement.setString(2, section);
+                                    statement.setString(3, day);
+                                    statement.setInt(4, periodIndex); // Store 0-based index for consistency
+                                    statement.setString(5, subjectCode);
+                                    statement.setString(6, staffName);
+                                    statement.addBatch();
+                                }
+                            }
+                        }
+                    }
+                }
+                statement.executeBatch();
+                showNotification("Success", "Generated timetables saved!", "#28a745");
+            }
+        } catch (SQLException e) {
+            showNotification("Database Error", "Error saving generated timetables: " + e.getMessage(), "#dc3545");
+        }
+    }
+
 
     private void saveToDatabase() {
         // Full table creation with proper UNIQUE constraint
@@ -427,7 +501,7 @@ public class TimeTableGeneratorUI extends Application {
     """;
 
         try (Statement createStatement = connection.createStatement()) {
-            // Drop old table to fix schema issues
+            // Drop old table to fix schema issues (consider removing this line after development)
             createStatement.execute("DROP TABLE IF EXISTS subjects;");
 
             // Create new table with full structure and UNIQUE constraint
@@ -504,9 +578,6 @@ public class TimeTableGeneratorUI extends Application {
         fadeTransition.play();
     }
 
-// Assume your layout structure is:
-// subjectsContainerMap.get(year) => VBox (holding rows)
-// subjectsContainerMap.get(year).getParent() => ScrollPane (with VBox as content)
 
     private void setupSubjectsContainer(String year) {
         VBox subjectContainer = new VBox(10);
@@ -658,11 +729,13 @@ public class TimeTableGeneratorUI extends Application {
         }
 
         public String getSubjectShortName() {
-            return shortNameField.getText().trim().isEmpty() ? getSubjectName() : shortNameField.getText().trim();
+            String shortName = shortNameField.getText().trim();
+            return shortName.isEmpty() ? subjectNameField.getText().trim() : shortName;
         }
 
         public String getSubjectCode() {
-            return codeField.getText().trim().isEmpty() ? getSubjectName() : codeField.getText().trim();
+            String code = codeField.getText().trim();
+            return code.isEmpty() ? subjectNameField.getText().trim() : code;
         }
 
         public int getPeriods() {
@@ -681,7 +754,13 @@ public class TimeTableGeneratorUI extends Application {
         private boolean isValidPeriods(String input) {
             try {
                 int periods = Integer.parseInt(input);
-                return periods > 0;
+                if (periods > 0) {
+                    periodsField.setStyle("-fx-background-color: white;"); // Reset style on valid input
+                    return true;
+                } else {
+                    periodsField.setStyle("-fx-background-color: #FFC0CB;"); // Light red for invalid input
+                    return false;
+                }
             } catch (NumberFormatException e) {
                 periodsField.setStyle("-fx-background-color: #FFC0CB;"); // Light red for invalid input
                 return false;
@@ -729,17 +808,21 @@ public class TimeTableGeneratorUI extends Application {
 
     // ----------------- Timetable Tab Content Creator -----------------
     // For each (year, section) we create a VBox that contains the timetable grid, a fitness label, a print button and a summary table.
-    private Node createTimetableTabContent(String tabTitle, GridPane grid, Label fitnessLabel, TableView<SubjectSummary> summaryTable) {
+    private Node createTimetableTabContent(String tabTitle, String academicYear, GridPane grid, Label fitnessLabel, TableView<SubjectSummary> summaryTable) {
         VBox container = new VBox(15);
         container.setPadding(new Insets(25));
         container.setStyle("-fx-background-color: white;");
+
+        Label academicYearLabel = new Label("Academic Year: " + academicYear);
+        academicYearLabel.setFont(Font.font("Arial", FontWeight.NORMAL, 14));
+        academicYearLabel.setTextFill(Color.web(TEXT_COLOR));
 
         Label titleLabel = new Label(tabTitle);
         titleLabel.setFont(Font.font("Arial", FontWeight.BOLD, 22));
         titleLabel.setTextFill(Color.web(PRIMARY_COLOR));
 
         HBox legend = createLegend();
-        VBox titleAndLegend = new VBox(10, titleLabel, legend);
+        VBox titleAndLegend = new VBox(10, academicYearLabel, titleLabel, legend);
 
         fitnessLabel.setFont(Font.font("Arial", FontWeight.BOLD, 14));
         fitnessLabel.setTextFill(Color.web(TEXT_COLOR));
@@ -832,8 +915,15 @@ public class TimeTableGeneratorUI extends Application {
             double nodeWidth = nodeToPrint.getBoundsInParent().getWidth();
             double nodeHeight = nodeToPrint.getBoundsInParent().getHeight();
 
-            double scale = Math.min(printableWidth / nodeWidth, printableHeight / nodeHeight);
-            scaleX = scaleY = scale;
+            // Check if the node has a valid size before scaling
+            if (nodeWidth > 0 && nodeHeight > 0) {
+                double scale = Math.min(printableWidth / nodeWidth, printableHeight / nodeHeight);
+                scaleX = scaleY = scale;
+            } else {
+                showAlert("Printing Error", "Timetable content has invalid dimensions.", Alert.AlertType.ERROR);
+                return; // Exit if dimensions are invalid
+            }
+
 
             // Apply scale transform safely
             javafx.scene.transform.Scale scaleTransform = new javafx.scene.transform.Scale(scaleX, scaleY);
@@ -868,7 +958,8 @@ public class TimeTableGeneratorUI extends Application {
         legend.setAlignment(Pos.CENTER_LEFT);
         legend.getChildren().addAll(
                 createLegendItem("Theory", THEORY_COLOR),
-                createLegendItem("Lab", LAB_COLOR)
+                createLegendItem("Lab", LAB_COLOR),
+                createLegendItem("Break/Lunch", BREAK_COLOR) // Added Break/Lunch to legend
         );
         return legend;
     }
@@ -911,7 +1002,7 @@ public class TimeTableGeneratorUI extends Application {
         dayHeader.setFont(Font.font("Segoe UI", FontWeight.BOLD, 12));
         dayHeader.setPadding(new Insets(5));
         dayHeader.setPrefSize(110, 60); // Adjust size as needed
-        dayHeader.setStyle("-fx-background-color: #e0e0e0; -fx-border-color: #ccc; -fx-border-width: 0.5px;");
+        dayHeader.setStyle("-fx-background-color: " + HEADER_COLOR + "; -fx-border-color: #ccc; -fx-border-width: 0.5px; -fx-text-fill: white;"); // Apply teal blue
         GridPane.setHalignment(dayHeader, HPos.CENTER);
         GridPane.setValignment(dayHeader, VPos.CENTER);
         grid.add(dayHeader, 0, 0);
@@ -942,23 +1033,6 @@ public class TimeTableGeneratorUI extends Application {
             }
         }
 
-        // Remove this block: Adding break/lunch labels – no longer needed
-    /*
-    for (int i = 0; i < PERIODS_PER_DAY; i++) {
-        if (i == 1 || i == 3) {
-            Label breakLabel = new Label("Break");
-            breakLabel.setRotate(-90);
-            breakLabel.setFont(Font.font("Arial", FontWeight.NORMAL, 12));
-            grid.add(breakLabel, 0, i + 1);
-        } else if (i == 4) {
-            Label lunchLabel = new Label("Lunch");
-            lunchLabel.setRotate(-90);
-            lunchLabel.setFont(Font.font("Arial", FontWeight.NORMAL, 12));
-            grid.add(lunchLabel, 0, i + 1);
-        }
-    }
-    */
-
         DropShadow ds = new DropShadow();
         ds.setRadius(6.0);
         ds.setOffsetY(4.0);
@@ -971,20 +1045,31 @@ public class TimeTableGeneratorUI extends Application {
     private String getTimeRangeLabel(int periodIndex) {
         int startHour = 9;
         int startMinute = 15;
-        int minutes = startHour * 60 + startMinute;
         int periodDuration = 45;
-        int breakDuration = 15;
+        int break1StartPeriod = 2; // Period index 1 (after P2)
+        int lunchStartPeriod = 5; // Period index 4 (after P5)
+        int break2StartPeriod = 7; // Period index 6 (after P7)
+        int breakDuration = 10;
         int lunchDuration = 60;
 
-        // Add durations of previous periods + breaks/lunches
+        int minutes = startHour * 60 + startMinute;
+
         for (int i = 0; i < periodIndex; i++) {
             minutes += periodDuration;
-            if (i == 1 || i == 3) minutes += breakDuration; // After 2nd and 4th period
-            if (i == 4) minutes += lunchDuration;           // After 5th period
+            if (i == break1StartPeriod - 1 || i == break2StartPeriod - 1) {
+                minutes += breakDuration;
+            }
+            if (i == lunchStartPeriod - 1) {
+                minutes += lunchDuration;
+            }
         }
 
         int startHours = minutes / 60;
         int startMins = minutes % 60;
+
+        if (periodIndex == break1StartPeriod - 1) return formatTime(minutes) + " - " + formatTime(minutes + breakDuration) + " (Break)";
+        if (periodIndex == lunchStartPeriod - 1) return formatTime(minutes) + " - " + formatTime(minutes + lunchDuration) + " (Lunch)";
+        if (periodIndex == break2StartPeriod - 1) return formatTime(minutes) + " - " + formatTime(minutes + breakDuration) + " (Break)";
 
         minutes += periodDuration;
         int endHours = minutes / 60;
@@ -998,7 +1083,15 @@ public class TimeTableGeneratorUI extends Application {
         int mins = totalMinutes % 60;
         return String.format("%02d:%02d", hours, mins);
     }
-
+    private boolean isBreakOrLunch(int periodIndex) {
+        return periodIndex == 1 || periodIndex == 4 || periodIndex == 6; // Indices after P2, P5, P7
+    }
+    private String getBreakOrLunchLabel(int periodIndex) {
+        if (periodIndex == 1) return "Break";
+        if (periodIndex == 4) return "Lunch";
+        if (periodIndex == 6) return "Break";
+        return "";
+    }
     private Label createHeaderCell(String text) {
         Label label = new Label(text);
         label.setMaxWidth(Double.MAX_VALUE);
@@ -1006,18 +1099,18 @@ public class TimeTableGeneratorUI extends Application {
         label.setFont(Font.font("Arial", FontWeight.BOLD, 13));
         label.setTextFill(Color.WHITE);
         label.setPadding(new Insets(8));
-        label.setStyle("-fx-background-color: " + PRIMARY_COLOR + ";");
+        label.setStyle("-fx-background-color: " + HEADER_COLOR + ";"); // Apply teal blue
         return label;
     }
     private Label createDayCell(String text) {
         Label label = new Label(text);
         label.setMaxWidth(Double.MAX_VALUE);
         label.setMaxHeight(Double.MAX_VALUE);
-        label.setAlignment(Pos.CENTER);
+        label.setAlignment(Pos.CENTER_LEFT); // Align day name to the left
         label.setFont(Font.font("Arial", FontWeight.BOLD, 12));
         label.setTextFill(Color.WHITE);
-        label.setPadding(new Insets(8));
-        label.setStyle("-fx-background-color: " + SECONDARY_COLOR + ";");
+        label.setPadding(new Insets(8, 10, 8, 10)); // Add left padding
+        label.setStyle("-fx-background-color: " + SECONDARY_COLOR + ";"); // Secondary color for day labels
         return label;
     }
     private Label createEmptyDataCell() {
@@ -1054,12 +1147,7 @@ public class TimeTableGeneratorUI extends Application {
         Map<String, Map<String, Boolean>> allIsLab = new HashMap<>();
         Map<String, Map<String, String>> allSubjectShortName = new HashMap<>();
         Map<String, Map<String, String>> allSubjectCode = new HashMap<>();
-//     Map<String, String> academicYears = new HashMap<>();
-//  for (String year : YEARS) {
-//             TextField academicYearField = academicYearFields.get(year);
-//             String academicYear = academicYearField.getText().trim();
-//             academicYears.put(year, academicYear);
-//         }
+
 
         boolean valid = true;
         for (String year : YEARS) {
@@ -1078,6 +1166,14 @@ public class TimeTableGeneratorUI extends Application {
 
 
             for (SubjectRow row : rows) {
+                row.getContainer().setStyle(String.format(
+                        "-fx-background-color: white; " +
+                                "-fx-border-color: %s; " +
+                                "-fx-border-width: 1; " +
+                                "-fx-border-radius: 5; " +
+                                "-fx-background-radius: 5;",
+                        BORDER_COLOR
+                )); // Reset validation highlight
                 if (!row.isValid()) {
                     valid = false;
                     row.getContainer().setStyle("-fx-border-color: " + WARNING_COLOR + "; -fx-border-width: 1.5px;");
@@ -1093,6 +1189,7 @@ public class TimeTableGeneratorUI extends Application {
                 if (!subjectNames.add(subjectName)) {
                     valid = false;
                     row.getContainer().setStyle("-fx-border-color: " + WARNING_COLOR + "; -fx-border-width: 1.5px;");
+                    showAlert("Input Error", "Duplicate subject name '" + subjectName + "' for " + year + ".", Alert.AlertType.ERROR);
                     continue;
                 }
                 subjectPeriods.put(subjectName, periods);
@@ -1106,6 +1203,7 @@ public class TimeTableGeneratorUI extends Application {
             if (totalPeriods != TOTAL_PERIODS_PER_WEEK) {
                 valid = false;
                 showAlert("Input Error", "For " + year + ", total periods must equal exactly " + TOTAL_PERIODS_PER_WEEK, Alert.AlertType.ERROR);
+                break; // Stop validation for subsequent years if one fails
             }
             allSubjectsWithPeriods.put(year, subjectPeriods);
             allSubjectStaff.put(year, subjectStaff);
@@ -1126,6 +1224,8 @@ public class TimeTableGeneratorUI extends Application {
         statusLabel.setManaged(true);
         statusLabel.setVisible(true);
         resultTabs.getTabs().clear(); // clear any previous generated tabs
+        generatedSchedules.clear(); // Clear previous schedules
+
 
         // --- 3. For each year generate Section A and Section B timetables.
         // (The TimeTableGenerator.generateSchedule(...) method is used here.)
@@ -1136,29 +1236,58 @@ public class TimeTableGeneratorUI extends Application {
             Map<String, Integer> subjectsCopy = allSubjectsWithPeriods.get(year);
             Map<String, String> staffCopy = allSubjectStaff.get(year);
             Map<String, Boolean> labCopy = allIsLab.get(year);
+            Map<String, String> shortNameCopy = allSubjectShortName.get(year);
+            Map<String, String> codeCopy = allSubjectCode.get(year);
+            String academicYear = academicYears.get(year);
+
+            // Initialize storage for this year
+            generatedSchedules.put(year, new HashMap<>());
+
             // ----------------- SECTION A -----------------
             statusLabel.setText("Generating " + year + " Section A timetable...");
-            TimeTableGenerator.Schedule scheduleA = TimeTableGenerator.generateScheduleGA(subjectsCopy, staffCopy, labCopy, globalStaffSchedule, globalStaffSchedule, "Section A", year);
+            TimeTableGenerator.Schedule scheduleA = TimeTableGenerator.generateScheduleGA(
+                    subjectsCopy,
+                    staffCopy,
+                    labCopy,
+                    shortNameCopy,
+                    codeCopy,
+                    globalStaffSchedule,
+                    globalStaffSectionMap,
+                    "Section A",
+                    year
+            );
+            generatedSchedules.get(year).put("Section A", scheduleA);
             GridPane gridA = createEmptyTimetableGrid();
             updateTimetableGrid(gridA, scheduleA);
             Label fitnessA = new Label("Fitness: " + scheduleA.getFitness());
             TableView<SubjectSummary> summaryTableA = createSubjectSummaryTable();
-            updateSummaryTable(summaryTableA, subjectsCopy, staffCopy);
+            updateSummaryTable(summaryTableA, subjectsCopy, staffCopy, shortNameCopy, codeCopy);
             String tabAName = year + " - Section A";
-            Tab tabA = new Tab(tabAName, createTimetableTabContent(tabAName, gridA, fitnessA, summaryTableA));
+            Tab tabA = new Tab(tabAName, createTimetableTabContent(tabAName, academicYear, gridA, fitnessA, summaryTableA));
             tabA.setClosable(false);
             resultTabs.getTabs().add(tabA);
 
             // ----------------- SECTION B -----------------
             statusLabel.setText("Generating " + year + " Section B timetable...");
-            TimeTableGenerator.Schedule scheduleB = TimeTableGenerator.generateScheduleGA(subjectsCopy, staffCopy, labCopy, globalStaffSchedule, globalStaffSchedule, "Section B", year);
+            TimeTableGenerator.Schedule scheduleB = TimeTableGenerator.generateScheduleGA(
+                    subjectsCopy,
+                    staffCopy,
+                    labCopy,
+                    shortNameCopy,
+                    codeCopy,
+                    globalStaffSchedule,
+                    globalStaffSectionMap,
+                    "Section B",
+                    year
+            );
+            generatedSchedules.get(year).put("Section B", scheduleB);
             GridPane gridB = createEmptyTimetableGrid();
             updateTimetableGrid(gridB, scheduleB);
             Label fitnessB = new Label("Fitness: " + scheduleB.getFitness());
             TableView<SubjectSummary> summaryTableB = createSubjectSummaryTable();
-            updateSummaryTable(summaryTableB, subjectsCopy, staffCopy);
+            updateSummaryTable(summaryTableB, subjectsCopy, staffCopy, shortNameCopy, codeCopy);
             String tabBName = year + " - Section B";
-            Tab tabB = new Tab(tabBName, createTimetableTabContent(tabBName, gridB, fitnessB, summaryTableB));
+            Tab tabB = new Tab(tabBName, createTimetableTabContent(tabBName, academicYear, gridB, fitnessB, summaryTableB));
             tabB.setClosable(false);
             resultTabs.getTabs().add(tabB);
         }
@@ -1189,30 +1318,53 @@ public class TimeTableGeneratorUI extends Application {
             List<String> daySchedule = timetable.getOrDefault(day, new ArrayList<>());
 
             for (int j = 0; j < daySchedule.size(); j++) {
-                String subject = daySchedule.get(j);
-                Label cell = new Label(subject == null ? "FREE" : abbreviate(subject));
+                String subjectName = daySchedule.get(j);
+                Label cell;
+                String color;
+
+//                if (isBreakOrLunch(j)) { // Check if it's a break/lunch period (using index, 0-based)
+//                    cell = new Label(getBreakOrLunchLabel(j));
+//                    color = BREAK_COLOR;
+//                }
+                if (subjectName != null) {
+                    cell = new Label(schedule.getSubjectShortNameMap().getOrDefault(subjectName, subjectName)); // Use short name
+                    color = schedule.getIsLabMap().getOrDefault(subjectName, false) ? LAB_COLOR : THEORY_COLOR;
+                } else {
+                    cell = new Label("FREE");
+                    color = "#f9f9f9"; // Consistent background for free periods
+                }
+
                 cell.setMaxWidth(Double.MAX_VALUE);
                 cell.setMaxHeight(Double.MAX_VALUE);
                 cell.setAlignment(Pos.CENTER);
                 cell.setFont(Font.font("Segoe UI", FontWeight.MEDIUM, 13));
                 cell.setPadding(new Insets(8));
                 cell.setMinHeight(50);
-
-                String color = (subject != null && schedule.getIsLabMap().getOrDefault(subject, false))
-                        ? LAB_COLOR : THEORY_COLOR;
-                if (subject == null) color = "#e0e0e0";
                 cell.setStyle("-fx-background-color: " + color + "; -fx-border-color: #ccc; -fx-border-width: 0.5px;");
-
                 grid.add(cell, j + 1, i + 1); // +1 to offset for header row/column
             }
         }
 
-        // Clear previous header cells
+        // Re-add header cells with updated colors
+        // Clear previous header cells (day and period)
         grid.getChildren().removeIf(node -> {
             Integer row = GridPane.getRowIndex(node);
             Integer col = GridPane.getColumnIndex(node);
             return (row != null && row == 0) || (col != null && col == 0);
         });
+
+        // Header: Day / Period
+        Label dayHeader = new Label("Day\n/ Period");
+        dayHeader.setWrapText(true);
+        dayHeader.setTextAlignment(TextAlignment.CENTER);
+        dayHeader.setAlignment(Pos.CENTER);
+        dayHeader.setFont(Font.font("Segoe UI", FontWeight.BOLD, 12));
+        dayHeader.setPadding(new Insets(5));
+        dayHeader.setPrefSize(110, 60); // Adjust size as needed
+        dayHeader.setStyle("-fx-background-color: " + HEADER_COLOR + "; -fx-border-color: #ccc; -fx-border-width: 0.5px; -fx-text-fill: white;"); // Apply teal blue
+        GridPane.setHalignment(dayHeader, HPos.CENTER);
+        GridPane.setValignment(dayHeader, VPos.CENTER);
+        grid.add(dayHeader, 0, 0);
 
         // Add time headers
         for (int i = 0; i < PERIODS_PER_DAY; i++) {
@@ -1224,6 +1376,7 @@ public class TimeTableGeneratorUI extends Application {
             timeLabel.setPadding(new Insets(5));
             timeLabel.setMinHeight(60);
             timeLabel.setAlignment(Pos.CENTER);
+            timeLabel.setStyle("-fx-background-color: " + HEADER_COLOR + "; -fx-border-color: #ccc; -fx-border-width: 0.5px; -fx-text-fill: white;"); // Apply teal blue
             GridPane.setHalignment(timeLabel, HPos.CENTER);
             grid.add(timeLabel, i + 1, 0);
         }
@@ -1235,6 +1388,7 @@ public class TimeTableGeneratorUI extends Application {
             dayLabel.setPadding(new Insets(5));
             dayLabel.setAlignment(Pos.CENTER_LEFT);
             dayLabel.setMinHeight(50);
+            dayLabel.setStyle("-fx-background-color: " + SECONDARY_COLOR + "; -fx-border-color: #ccc; -fx-border-width: 0.5px; -fx-text-fill: white;"); // Apply secondary color
             grid.add(dayLabel, 0, i + 1);
         }
     }
@@ -1260,18 +1414,176 @@ public class TimeTableGeneratorUI extends Application {
 
     // ----------------- Update Summary Table -----------------
     // For simplicity we simply list each subject information.
-    private void updateSummaryTable(TableView<SubjectSummary> table, Map<String,Integer> subjects, Map<String,String> staff) {
-        if (subjects == null || staff == null) return;
+    private void updateSummaryTable(TableView<SubjectSummary> table, Map<String,Integer> subjects, Map<String,String> staff, Map<String, String> shortNames, Map<String, String> codes) {
+        if (subjects == null || staff == null || shortNames == null || codes == null) return;
         ObservableList<SubjectSummary> data = FXCollections.observableArrayList();
         int serial = 1;
         for (String subject : subjects.keySet()) {
-            String code = subject; // For simplicity we use subject name as code here.
-            String shortName = subject; // Likewise.
+            String code = codes.getOrDefault(subject, subject); // Use actual code or fallback to subject name
+            String shortName = shortNames.getOrDefault(subject, subject); // Use short name or fallback to subject name
             String staffName = staff.get(subject);
             int periods = subjects.get(subject);
             data.add(new SubjectSummary(serial++, code, shortName, staffName, periods));
         }
         table.setItems(data);
+    }
+
+    // --- NEW METHOD: Show Staff Timetable ---
+    private void showStaffTimetable() {
+        TextInputDialog dialog = new TextInputDialog();
+        dialog.setTitle("Staff Timetable");
+        dialog.setHeaderText("Enter Staff Name");
+        dialog.setContentText("Staff Name:");
+
+        Optional<String> result = dialog.showAndWait();
+        result.ifPresent(staffName -> {
+            // Query the database for the staff's schedule
+            Map<String, Map<String, List<String>>> staffSchedule = new HashMap<>(); // Year -> Day -> Periods
+            String query = "SELECT year, section, day, period_index, subject_code FROM generated_timetables WHERE staff_name = ?";
+            try (PreparedStatement statement = connection.prepareStatement(query)) {
+                statement.setString(1, staffName);
+                ResultSet rs = statement.executeQuery();
+                while (rs.next()) {
+                    String year = rs.getString("year");
+                    String section = rs.getString("section");
+                    String day = rs.getString("day");
+                    int periodIndex = rs.getInt("period_index");
+                    String subjectCode = rs.getString("subject_code");
+
+                    String yearSectionKey = year + " - " + section;
+                    staffSchedule.computeIfAbsent(yearSectionKey, k -> new HashMap<>())
+                            .computeIfAbsent(day, k -> new ArrayList<>(Collections.nCopies(PERIODS_PER_DAY, null)))
+                            .set(periodIndex, subjectCode); // Use subject code
+                }
+
+                // Display the staff's timetable
+                if (staffSchedule.isEmpty()) {
+                    showAlert("Staff Timetable", "No schedule found for staff: " + staffName, Alert.AlertType.INFORMATION);
+                } else {
+                    displayStaffTimetable(staffName, staffSchedule);
+                }
+
+            } catch (SQLException e) {
+                showAlert("Database Error", "Error retrieving staff timetable: " + e.getMessage(), Alert.AlertType.ERROR);
+            }
+        });
+    }
+
+    // --- NEW METHOD: Display Staff Timetable in a new window ---
+    private void displayStaffTimetable(String staffName, Map<String, Map<String, List<String>>> staffSchedule) {
+        Stage stage = new Stage();
+        stage.setTitle("Timetable for " + staffName);
+
+        VBox mainLayout = new VBox(10);
+        mainLayout.setPadding(new Insets(10));
+
+        Label title = new Label("Timetable for Staff: " + staffName);
+        title.setFont(Font.font("Arial", FontWeight.BOLD, 18));
+
+        TabPane yearSectionTabs = new TabPane();
+        for (Map.Entry<String, Map<String, List<String>>> entry : staffSchedule.entrySet()) {
+            String yearSection = entry.getKey();
+            Map<String, List<String>> daySchedule = entry.getValue();
+
+            GridPane grid = createStaffTimetableGrid(daySchedule);
+            ScrollPane scrollPane = new ScrollPane(grid);
+            scrollPane.setFitToWidth(true);
+
+            Tab tab = new Tab(yearSection, scrollPane);
+            tab.setClosable(false);
+            yearSectionTabs.getTabs().add(tab);
+        }
+
+        mainLayout.getChildren().addAll(title, yearSectionTabs);
+
+        Scene scene = new Scene(mainLayout, 800, 600);
+        stage.setScene(scene);
+        stage.show();
+    }
+
+    // --- NEW METHOD: Create Staff Timetable Grid ---
+    private GridPane createStaffTimetableGrid(Map<String, List<String>> daySchedule) {
+        GridPane grid = new GridPane();
+        grid.setHgap(3);
+        grid.setVgap(3);
+        grid.setPadding(new Insets(10));
+        grid.setStyle("-fx-background-color: " + BORDER_COLOR + "; -fx-border-color: " + BORDER_COLOR + "; -fx-border-width: 1;");
+
+        ColumnConstraints dayCol = new ColumnConstraints();
+        dayCol.setPrefWidth(110);
+        dayCol.setMinWidth(90);
+        grid.getColumnConstraints().add(dayCol);
+
+        for (int i = 1; i <= PERIODS_PER_DAY; i++) {
+            ColumnConstraints periodCol = new ColumnConstraints();
+            periodCol.setPrefWidth(150);
+            periodCol.setMinWidth(130);
+            periodCol.setHgrow(Priority.SOMETIMES);
+            grid.getColumnConstraints().add(periodCol);
+        }
+
+        // Header: Day / Period
+        Label dayHeader = new Label("Day\n/ Period");
+        dayHeader.setWrapText(true);
+        dayHeader.setTextAlignment(TextAlignment.CENTER);
+        dayHeader.setAlignment(Pos.CENTER);
+        dayHeader.setFont(Font.font("Segoe UI", FontWeight.BOLD, 12));
+        dayHeader.setPadding(new Insets(5));
+        dayHeader.setPrefSize(110, 60);
+        dayHeader.setStyle("-fx-background-color: " + HEADER_COLOR + "; -fx-border-color: #ccc; -fx-border-width: 0.5px; -fx-text-fill: white;");
+        GridPane.setHalignment(dayHeader, HPos.CENTER);
+        GridPane.setValignment(dayHeader, VPos.CENTER);
+        grid.add(dayHeader, 0, 0);
+
+        // Period Headers
+        for (int i = 1; i <= PERIODS_PER_DAY; i++) {
+            String timeRange = getTimeRangeLabel(i - 1);
+            Label periodLabel = createHeaderCell("P" + i + "\n" + timeRange);
+            periodLabel.setWrapText(true);
+            periodLabel.setTextAlignment(TextAlignment.CENTER);
+            periodLabel.setAlignment(Pos.CENTER);
+            periodLabel.setFont(Font.font("Segoe UI", FontWeight.BOLD, 11));
+            periodLabel.setMinHeight(60);
+            periodLabel.setMaxWidth(Double.MAX_VALUE);
+            GridPane.setHalignment(periodLabel, HPos.CENTER);
+            grid.add(periodLabel, i, 0);
+        }
+
+        // Timetable Data
+        for (int i = 0; i < DAYS_OF_WEEK.size(); i++) {
+            String day = DAYS_OF_WEEK.get(i);
+            Label dayLabel = createDayCell(day);
+            grid.add(dayLabel, 0, i + 1);
+
+            List<String> periods = daySchedule.getOrDefault(day, Collections.nCopies(PERIODS_PER_DAY, null));
+            for (int j = 0; j < PERIODS_PER_DAY; j++) {
+                Label cell;
+                String subjectCode = periods.get(j);
+                String color;
+
+//                if (isBreakOrLunch(j)) {
+//                    cell = new Label(getBreakOrLunchLabel(j));
+//                    color = BREAK_COLOR;
+//                }
+                if (subjectCode != null) {
+                    cell = new Label(subjectCode); // Show Subject Code for staff timetable
+                    color = THEORY_COLOR; // Default color, could enhance with Lab/Theory logic if needed
+                } else {
+                    cell = new Label("FREE");
+                    color = "#f9f9f9";
+                }
+
+                cell.setMaxWidth(Double.MAX_VALUE);
+                cell.setMaxHeight(Double.MAX_VALUE);
+                cell.setAlignment(Pos.CENTER);
+                cell.setFont(Font.font("Segoe UI", FontWeight.MEDIUM, 13));
+                cell.setPadding(new Insets(8));
+                cell.setMinHeight(50);
+                cell.setStyle("-fx-background-color: " + color + "; -fx-border-color: #ccc; -fx-border-width: 0.5px;");
+                grid.add(cell, j + 1, i + 1);
+            }
+        }
+        return grid;
     }
 
     // ----------------- Utility Alert and Notification -----------------
@@ -1364,6 +1676,76 @@ public class TimeTableGeneratorUI extends Application {
         // Placeholder implementation for exporting to PDF
         showNotification("Export to PDF", "PDF export functionality is not yet implemented.", WARNING_COLOR);
     }
+
+    // --- NEW METHOD: Export All Timetables to Excel ---
+    private void exportTimetablesToExcel() {
+        if (generatedSchedules.isEmpty()) {
+            showNotification("Export Failed", "No timetables generated yet.", "#F44336");
+            return;
+        }
+
+        Platform.runLater(() -> {
+            try (Workbook workbook = new XSSFWorkbook()) {
+
+                for (Map.Entry<String, Map<String, TimeTableGenerator.Schedule>> yearEntry : generatedSchedules.entrySet()) {
+                    String year = yearEntry.getKey();
+                    for (Map.Entry<String, TimeTableGenerator.Schedule> sectionEntry : yearEntry.getValue().entrySet()) {
+                        String section = sectionEntry.getKey();
+                        TimeTableGenerator.Schedule schedule = sectionEntry.getValue();
+                        String sheetName = year + " - " + section;
+                        Sheet sheet = workbook.createSheet(sheetName);
+
+                        // Create header row for periods
+                        Row headerRow = sheet.createRow(0);
+                        headerRow.createCell(0).setCellValue("Day/Period");
+                        for (int i = 0; i < PERIODS_PER_DAY; i++) {
+                            String timeRange = getTimeRangeLabel(i);
+                            headerRow.createCell(i + 1).setCellValue("P" + (i + 1) + "\n" + timeRange);
+                        }
+
+                        // Populate timetable data
+                        for (int i = 0; i < DAYS_OF_WEEK.size(); i++) {
+                            String day = DAYS_OF_WEEK.get(i);
+                            Row row = sheet.createRow(i + 1);
+                            row.createCell(0).setCellValue(day); // Day label
+
+                            List<String> daySchedule = schedule.getTimetable().getOrDefault(day, Collections.nCopies(PERIODS_PER_DAY, null));
+                            for (int j = 0; j < PERIODS_PER_DAY; j++) {
+                                String subjectName = daySchedule.get(j);
+                                String cellContent;
+                                if (isBreakOrLunch(j)) {
+                                    cellContent = getBreakOrLunchLabel(j);
+                                } else if (subjectName != null) {
+                                    cellContent = schedule.getSubjectShortNameMap().getOrDefault(subjectName, subjectName);
+                                } else {
+                                    cellContent = "FREE";
+                                }
+                                row.createCell(j + 1).setCellValue(cellContent);
+                            }
+                        }
+                    }
+                }
+
+                FileChooser fileChooser = new FileChooser();
+                fileChooser.setTitle("Save Excel File");
+                fileChooser.getExtensionFilters().add(new FileChooser.ExtensionFilter("Excel Files", "*.xlsx"));
+                fileChooser.setInitialFileName("AllTimetables.xlsx");
+                File file = fileChooser.showSaveDialog(null);
+
+                if (file != null) {
+                    try (FileOutputStream fileOut = new FileOutputStream(file)) {
+                        workbook.write(fileOut);
+                        showNotification("Export Successful", "All timetables exported to Excel successfully.", "#4CAF50");
+                    }
+                }
+
+            } catch (IOException e) {
+                e.printStackTrace();
+                showNotification("Export Failed", "An error occurred while exporting timetables to Excel.", "#F44336");
+            }
+        });
+    }
+
 
     private void exportToExcel() {
         if (currentSummaryTable == null) {
@@ -1460,6 +1842,5 @@ public class TimeTableGeneratorUI extends Application {
         }
     }
 
-    // ----------------- Dummy SubjectRow class -----------------
-    // (This duplicate class definition has been removed to resolve the error.)
+
 }

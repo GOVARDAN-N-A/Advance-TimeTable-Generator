@@ -26,15 +26,21 @@ public class TimeTableGenerator {
         private final Map<String, String> subjectStaffMap; // subject -> staff name
         private final Map<String, Boolean> isLabMap; // subject -> is lab?
         private final Map<String, Integer> subjectsWithPeriods; // subject -> total weekly periods required
+        private final Map<String, String> subjectShortNameMap; // subject -> short name
+        private final Map<String, String> subjectCodeMap; // subject -> code
 
         Schedule(Map<String, List<String>> timetable,
                  Map<String, String> subjectStaffMap,
                  Map<String, Boolean> isLabMap,
-                 Map<String, Integer> subjectsWithPeriods) {
+                 Map<String, Integer> subjectsWithPeriods,
+                 Map<String, String> subjectShortNameMap,
+                 Map<String, String> subjectCodeMap) {
             this.timetable = timetable;
             this.subjectStaffMap = subjectStaffMap;
             this.isLabMap = isLabMap;
             this.subjectsWithPeriods = subjectsWithPeriods;
+            this.subjectShortNameMap = subjectShortNameMap;
+            this.subjectCodeMap = subjectCodeMap;
         }
 
         public Map<String, List<String>> getTimetable() {
@@ -52,6 +58,16 @@ public class TimeTableGenerator {
         public Map<String, Integer> getSubjectsWithPeriods() {
             return subjectsWithPeriods;
         }
+
+        // --- NEW GETTERS ---
+        public Map<String, String> getSubjectShortNameMap() {
+            return subjectShortNameMap;
+        }
+
+        public Map<String, String> getSubjectCodeMap() {
+            return subjectCodeMap;
+        }
+        // --- END NEW GETTERS ---
 
         public double getFitness() {
             // Calculate fitness based on constraints
@@ -73,7 +89,7 @@ public class TimeTableGenerator {
                 String subject = entry.getKey();
                 int requiredPeriods = entry.getValue();
 
-                if (isLabMap.get(subject)) {
+                if (isLabMap.getOrDefault(subject, false)) { // Use getOrDefault for safety
                     int actualPeriods = subjectCounts.getOrDefault(subject, 0);
 
                     // Reward if the total periods match the required periods
@@ -91,7 +107,7 @@ public class TimeTableGenerator {
                         for (int i = 0; i <= PERIODS_PER_DAY - requiredPeriods; i++) {
                             boolean isBlock = true;
                             for (int j = 0; j < requiredPeriods; j++) {
-                                if (periods.get(i + j) == null || !periods.get(i + j).equals(subject)) {
+                                if (i + j >= periods.size() || periods.get(i + j) == null || !periods.get(i + j).equals(subject)) {
                                     isBlock = false;
                                     break;
                                 }
@@ -104,8 +120,16 @@ public class TimeTableGenerator {
                         if (foundConsecutiveBlock && actualPeriods == requiredPeriods) {
                             fitness += 1.0; // Reward for consecutive block
                         } else if (actualPeriods > 0) {
-                            fitness -= 1.0; // Penalty if periods exist but are not consecutive
+                            // Penalty if periods exist but are not consecutive *and* if they are not the full block
+                            // Only penalize if it's not the correct full block placed consecutively
+                            if (!foundConsecutiveBlock) {
+                                fitness -= 1.0;
+                            }
                         }
+                    }
+                    // Additional check: If a lab is required but no periods are assigned, penalize
+                    if (requiredPeriods > 0 && actualPeriods == 0) {
+                        fitness -= 2.0; // Strong penalty
                     }
                 }
             }
@@ -115,7 +139,7 @@ public class TimeTableGenerator {
                 List<String> periods = timetable.get(day);
                 Map<String, Integer> theoryCount = new HashMap<>();
                 for (String period : periods) {
-                    if (period != null && !isLabMap.get(period)) {
+                    if (period != null && !isLabMap.getOrDefault(period, false)) { // Use getOrDefault for safety
                         theoryCount.put(period, theoryCount.getOrDefault(period, 0) + 1);
                     }
                 }
@@ -129,25 +153,46 @@ public class TimeTableGenerator {
             }
 
             // Check 3: Lab periods in first half or second half
+            int midPeriod = PERIODS_PER_DAY / 2; // Assuming 8 periods, mid is at index 4 (after P4)
             for (String day : DAYS_OF_WEEK) {
                 List<String> periods = timetable.get(day);
                 for (int i = 0; i < PERIODS_PER_DAY; i++) {
                     String subject = periods.get(i);
-                    if (subject != null && isLabMap.get(subject)) {
-                        int labDuration = subjectsWithPeriods.get(subject);
-                        // Ensure the lab block actually starts here and is consecutive
-                        boolean isStartOfBlock = true;
-                        if (i > 0 && periods.get(i - 1) != null && periods.get(i - 1).equals(subject)) {
-                            isStartOfBlock = false; // This isn't the start of the block
-                        }
+                    if (subject != null && isLabMap.getOrDefault(subject, false)) {
+                        int labDuration = subjectsWithPeriods.getOrDefault(subject, 0);
+
+                        // Check if this is the *start* of the lab block
+                        boolean isStartOfBlock = (i == 0 || periods.get(i - 1) == null || !periods.get(i - 1).equals(subject));
 
                         if (isStartOfBlock) {
-                            boolean fitsInFirstHalf = (i < PERIODS_PER_DAY / 2 && i + labDuration <= PERIODS_PER_DAY / 2);
-                            boolean fitsInSecondHalf = (i >= PERIODS_PER_DAY / 2 && i + labDuration <= PERIODS_PER_DAY);
+                            // Check if the entire block fits within the first half (up to index midPeriod-1)
+                            boolean fitsInFirstHalf = (i < midPeriod && i + labDuration <= midPeriod);
+                            // Check if the entire block fits within the second half (from index midPeriod)
+                            boolean fitsInSecondHalf = (i >= midPeriod && i + labDuration <= PERIODS_PER_DAY);
 
                             if (fitsInFirstHalf || fitsInSecondHalf) {
                                 fitness += 0.5; // Reward if the lab block fits entirely within a half
+                            } else {
+                                fitness -= 0.5; // Penalty if it spans across the halves
                             }
+                        }
+                    }
+                }
+            }
+
+            // Check 4: Staff collisions (same staff teaching different subjects at the same time) - Section level
+            for (String day : DAYS_OF_WEEK) {
+                List<String> periods = timetable.get(day);
+                Map<String, String> staffPeriodMap = new HashMap<>(); // period_index -> staff_name
+                for (int i = 0; i < periods.size(); i++) {
+                    String subject = periods.get(i);
+                    if (subject != null) {
+                        String staff = subjectStaffMap.get(subject);
+                        if (staffPeriodMap.containsKey(staff)) {
+                            // Collision detected within the section
+                            fitness -= 1.0;
+                        } else {
+                            staffPeriodMap.put(staff, subject);
                         }
                     }
                 }
@@ -186,6 +231,8 @@ public class TimeTableGenerator {
                 Map<String, Integer> subjectsWithPeriods = new HashMap<>();
                 Map<String, String> subjectStaffMap = new HashMap<>();
                 Map<String, Boolean> isLabMap = new HashMap<>();
+                Map<String, String> subjectShortNameMap = new HashMap<>();
+                Map<String, String> subjectCodeMap = new HashMap<>();
 
                 System.out.print("Enter number of subjects (including labs) for " + year + ": ");
                 int numSubjects = scanner.nextInt();
@@ -196,12 +243,20 @@ public class TimeTableGenerator {
 
                 for (int i = 0; i < numSubjects; i++) {
                     System.out.println("\nSubject " + (i + 1) + " for " + year + ":");
-                    System.out.print("Enter subject name (e.g., MA8351 or LAB1): ");
-                    String name = scanner.nextLine().trim().toUpperCase();
+                    System.out.print("Enter subject name (e.g., Programming): ");
+                    String name = scanner.nextLine().trim();
                     if (name.isEmpty())
                         throw new IllegalArgumentException("Subject name cannot be empty.");
                     if (subjectsWithPeriods.containsKey(name))
                         throw new IllegalArgumentException("Duplicate subject name: " + name);
+
+                    System.out.print("Enter subject short name (e.g., PRG): ");
+                    String shortName = scanner.nextLine().trim().toUpperCase();
+                    if (shortName.isEmpty()) shortName = name; // Use full name if short name is empty
+
+                    System.out.print("Enter subject code (e.g., CS201): ");
+                    String code = scanner.nextLine().trim().toUpperCase();
+                    if (code.isEmpty()) code = name; // Use full name if code is empty
 
                     System.out.print("Enter number of periods per week (e.g., 4 for theory, 2 or 3 for lab): ");
                     int periods = scanner.nextInt();
@@ -228,6 +283,9 @@ public class TimeTableGenerator {
                     subjectsWithPeriods.put(name, periods);
                     subjectStaffMap.put(name, staff);
                     isLabMap.put(name, isLab);
+                    subjectShortNameMap.put(name, shortName);
+                    subjectCodeMap.put(name, code);
+
 
                     // Track staff assignments across sections and years
                     globalStaffSectionMap.computeIfAbsent(staff, k -> new HashSet<>()).add(year + " - " + (isLab ? "Lab" : "Theory"));
@@ -246,11 +304,11 @@ public class TimeTableGenerator {
 
                 // Generate Section A timetable first using Genetic Algorithm
                 Schedule scheduleA = generateScheduleGA(subjectsWithPeriods, subjectStaffMap, isLabMap,
-                        globalStaffSchedule, globalStaffSectionMap, "Section A", year);
+                        subjectShortNameMap, subjectCodeMap, globalStaffSchedule, globalStaffSectionMap, "Section A", year);
 
                 // Generate Section B timetable, taking into account global staff collisions.
                 Schedule scheduleB = generateScheduleGA(subjectsWithPeriods, subjectStaffMap, isLabMap,
-                        globalStaffSchedule, globalStaffSectionMap, "Section B", year);
+                        subjectShortNameMap, subjectCodeMap, globalStaffSchedule, globalStaffSectionMap, "Section B", year);
 
                 // Print timetables for this year
                 printTimetable(scheduleA, year + " - Section A");
@@ -277,6 +335,8 @@ public class TimeTableGenerator {
     static Schedule generateScheduleGA(Map<String, Integer> subjectsWithPeriods,
                                        Map<String, String> subjectStaffMap,
                                        Map<String, Boolean> isLabMap,
+                                       Map<String, String> subjectShortNameMap, // Added
+                                       Map<String, String> subjectCodeMap,      // Added
                                        Map<String, Set<String>> globalStaffSchedule,
                                        Map<String, Set<String>> globalStaffSectionMap,
                                        String section,
@@ -287,8 +347,11 @@ public class TimeTableGenerator {
         // Initialize population with random timetables
         List<Schedule> population = new ArrayList<>();
         for (int i = 0; i < populationSize; i++) {
-            Map<String, List<String>> timetable = initializeTimetable(subjectsWithPeriods, subjectStaffMap, isLabMap, globalStaffSectionMap, section);
-            population.add(new Schedule(timetable, subjectStaffMap, isLabMap, subjectsWithPeriods));
+            Map<String, List<String>> timetable = initializeTimetable(subjectsWithPeriods, subjectStaffMap, isLabMap,
+                    subjectShortNameMap, subjectCodeMap, // Added
+                    globalStaffSectionMap, section);
+            population.add(new Schedule(timetable, subjectStaffMap, isLabMap, subjectsWithPeriods,
+                    subjectShortNameMap, subjectCodeMap)); // Added
         }
 
         // Evolve population using Genetic Algorithm
@@ -307,10 +370,13 @@ public class TimeTableGenerator {
             List<Schedule> fittestSchedules = selectFittest(population, populationSize / 5); // Select top 20%
 
             // Crossover (recombine) fittest schedules to create new offspring
-            List<Schedule> offspring = crossover(fittestSchedules, subjectsWithPeriods, subjectStaffMap, isLabMap);
+            List<Schedule> offspring = crossover(fittestSchedules, subjectsWithPeriods, subjectStaffMap, isLabMap,
+                    subjectShortNameMap, subjectCodeMap); // Added
 
             // Mutate offspring to introduce random variations
-            mutate(offspring, subjectsWithPeriods, subjectStaffMap, isLabMap, globalStaffSectionMap, section);
+            mutate(offspring, subjectsWithPeriods, subjectStaffMap, isLabMap,
+                    subjectShortNameMap, subjectCodeMap, // Added
+                    globalStaffSectionMap, section);
 
             // Combine parents and offspring for next generation selection
             population.addAll(offspring);
@@ -333,6 +399,8 @@ public class TimeTableGenerator {
             Map<String, Integer> subjectsWithPeriods,
             Map<String, String> subjectStaffMap,
             Map<String, Boolean> isLabMap,
+            Map<String, String> subjectShortNameMap, // Added
+            Map<String, String> subjectCodeMap,      // Added
             Map<String, Set<String>> globalStaffSectionMap,
             String section) {
 
@@ -343,12 +411,12 @@ public class TimeTableGenerator {
 
         // Step 1: Place labs (Ensure each lab appears only once per week)
         List<String> labs = subjectsWithPeriods.entrySet().stream()
-                .filter(e -> isLabMap.get(e.getKey())) // Filter only lab subjects
+                .filter(e -> isLabMap.getOrDefault(e.getKey(), false)) // Filter only lab subjects
                 .map(Map.Entry::getKey)
                 .collect(Collectors.toList());
 
         for (String lab : labs) {
-            int labDuration = subjectsWithPeriods.get(lab);
+            int labDuration = subjectsWithPeriods.getOrDefault(lab, 0);
             boolean placed = false;
 
             // Try to place the lab only once in the week
@@ -361,7 +429,7 @@ public class TimeTableGenerator {
                 // Check if the slot is available (no overlapping subjects)
                 boolean canPlace = true;
                 for (int j = 0; j < labDuration; j++) {
-                    if (timetable.get(day).get(startPeriod + j) != null) {
+                    if (startPeriod + j >= PERIODS_PER_DAY || timetable.get(day).get(startPeriod + j) != null) {
                         canPlace = false;
                         break;
                     }
@@ -369,11 +437,16 @@ public class TimeTableGenerator {
 
                 // Check for staff collision within the same section during initialization
                 if (canPlace) {
-                    String staff = subjectStaffMap.get(lab);
+                    String staff = subjectStaffMap.getOrDefault(lab, "");
                     for (int j = 0; j < labDuration; j++) {
-                        String currentPeriodSubject = timetable.get(day).get(startPeriod + j);
-                        if (currentPeriodSubject != null && subjectStaffMap.get(currentPeriodSubject).equals(staff)) {
-                            canPlace = false;
+                        if (startPeriod + j < PERIODS_PER_DAY) { // Ensure index is valid
+                            String currentPeriodSubject = timetable.get(day).get(startPeriod + j);
+                            if (currentPeriodSubject != null && subjectStaffMap.getOrDefault(currentPeriodSubject, "").equals(staff)) {
+                                canPlace = false;
+                                break;
+                            }
+                        } else {
+                            canPlace = false; // Lab goes beyond the day's periods
                             break;
                         }
                     }
@@ -382,7 +455,13 @@ public class TimeTableGenerator {
                 if (canPlace) {
                     // Place the lab in the timetable
                     for (int j = 0; j < labDuration; j++) {
-                        timetable.get(day).set(startPeriod + j, lab);
+                        if (startPeriod + j < PERIODS_PER_DAY) { // Ensure index is valid
+                            timetable.get(day).set(startPeriod + j, lab);
+                        } else {
+                            // This case should technically be prevented by the check above
+                            // but adding a safety break just in case
+                            break;
+                        }
                     }
                     placed = true; // Lab is now scheduled for the week
                 }
@@ -397,12 +476,12 @@ public class TimeTableGenerator {
 
         // Step 2: Place theory subjects
         List<String> theorySubjects = subjectsWithPeriods.entrySet().stream()
-                .filter(e -> !isLabMap.get(e.getKey())) // Only theory subjects
+                .filter(e -> !isLabMap.getOrDefault(e.getKey(), false)) // Only theory subjects
                 .map(Map.Entry::getKey)
                 .collect(Collectors.toList());
 
         for (String subject : theorySubjects) {
-            int remainingPeriods = subjectsWithPeriods.get(subject);
+            int remainingPeriods = subjectsWithPeriods.getOrDefault(subject, 0);
 
             while (remainingPeriods > 0) {
                 String day = DAYS_OF_WEEK.get(random.nextInt(DAYS_OF_WEEK.size()));
@@ -435,7 +514,10 @@ public class TimeTableGenerator {
     static List<Schedule> crossover(List<Schedule> fittestSchedules,
                                     Map<String, Integer> subjectsWithPeriods,
                                     Map<String, String> subjectStaffMap,
-                                    Map<String, Boolean> isLabMap) {
+                                    Map<String, Boolean> isLabMap,
+                                    Map<String, String> subjectShortNameMap, // Added
+                                    Map<String, String> subjectCodeMap)      // Added
+    {
         // Crossover (recombine) fittest schedules to create new offspring
         List<Schedule> offspring = new ArrayList<>();
         // Create pairs and perform crossover
@@ -446,7 +528,8 @@ public class TimeTableGenerator {
 
                 Map<String, List<String>> childTimetable = crossoverTimetables(parent1.getTimetable(),
                         parent2.getTimetable());
-                offspring.add(new Schedule(childTimetable, subjectStaffMap, isLabMap, subjectsWithPeriods));
+                offspring.add(new Schedule(childTimetable, subjectStaffMap, isLabMap, subjectsWithPeriods,
+                        subjectShortNameMap, subjectCodeMap)); // Added
             }
         }
         return offspring;
@@ -471,6 +554,8 @@ public class TimeTableGenerator {
                        Map<String, Integer> subjectsWithPeriods,
                        Map<String, String> subjectStaffMap,
                        Map<String, Boolean> isLabMap,
+                       Map<String, String> subjectShortNameMap, // Added
+                       Map<String, String> subjectCodeMap,      // Added
                        Map<String, Set<String>> globalStaffSectionMap,
                        String section) {
         // Mutate offspring by randomly swapping periods (with check for labs)
@@ -486,16 +571,16 @@ public class TimeTableGenerator {
                     String subjectJ = periods.get(j);
 
                     // Check if either subject is a lab
-                    if (subjectI != null && isLabMap.get(subjectI)) {
+                    if (subjectI != null && isLabMap.getOrDefault(subjectI, false)) {
                         // If subjectI is a lab, move entire lab block
-                        int labDuration = subjectsWithPeriods.get(subjectI);
+                        int labDuration = subjectsWithPeriods.getOrDefault(subjectI, 0);
                         boolean canMoveBlock = true;
                         // Check if we have space to move the block
                         if (j + labDuration > PERIODS_PER_DAY) {
                             canMoveBlock = false;
                         } else {
                             for (int k = 0; k < labDuration; k++) {
-                                if (periods.get(j + k) != null) {
+                                if (j + k >= PERIODS_PER_DAY || periods.get(j + k) != null) { // Check bounds
                                     canMoveBlock = false;
                                     break;
                                 }
@@ -503,23 +588,31 @@ public class TimeTableGenerator {
                         }
                         if (canMoveBlock) {
                             // move the lab block.
+                            // First, clear the original location of the block
+                            for(int k = 0; k < labDuration; k++) {
+                                if (i + k < PERIODS_PER_DAY && periods.get(i + k) != null && periods.get(i + k).equals(subjectI)) {
+                                    periods.set(i + k, null);
+                                }
+                            }
+                            // Then, place the block at the new location
                             for (int k = 0; k < labDuration; k++) {
-                                periods.set(j + k, subjectI);
-                                periods.set(i + k, null); // clear the original location
+                                if (j + k < PERIODS_PER_DAY) {
+                                    periods.set(j + k, subjectI);
+                                }
                             }
                             continue;  // Skip the remaining part of this iteration.
                         }
                     }
-                    if (subjectJ != null && isLabMap.get(subjectJ)) {
+                    if (subjectJ != null && isLabMap.getOrDefault(subjectJ, false)) {
                         // If subjectJ is a lab, move entire lab block
-                        int labDuration = subjectsWithPeriods.get(subjectJ);
+                        int labDuration = subjectsWithPeriods.getOrDefault(subjectJ, 0);
                         boolean canMoveBlock = true;
                         // Check if we have space to move the block
                         if (i + labDuration > PERIODS_PER_DAY) {
                             canMoveBlock = false;
                         } else {
                             for (int k = 0; k < labDuration; k++) {
-                                if (periods.get(i + k) != null) {
+                                if (i + k >= PERIODS_PER_DAY || periods.get(i + k) != null) { // Check bounds
                                     canMoveBlock = false;
                                     break;
                                 }
@@ -527,9 +620,17 @@ public class TimeTableGenerator {
                         }
                         if (canMoveBlock) {
                             // move the lab block.
+                            // First, clear the original location of the block
+                            for(int k = 0; k < labDuration; k++) {
+                                if (j + k < PERIODS_PER_DAY && periods.get(j + k) != null && periods.get(j + k).equals(subjectJ)) {
+                                    periods.set(j + k, null);
+                                }
+                            }
+                            // Then, place the block at the new location
                             for (int k = 0; k < labDuration; k++) {
-                                periods.set(i + k, subjectJ);
-                                periods.set(j + k, null); // clear the original location
+                                if (i + k < PERIODS_PER_DAY) {
+                                    periods.set(i + k, subjectJ);
+                                }
                             }
                             continue; // Skip the remaining part of this iteration.
                         }
@@ -540,15 +641,22 @@ public class TimeTableGenerator {
                         continue;
                     }
                     // Ensure that swapping doesn't violate staff allocation across sections
-                    String staffI = subjectStaffMap.get(subjectI);
-                    String staffJ = subjectStaffMap.get(subjectJ);
+                    String staffI = subjectStaffMap.getOrDefault(subjectI, "");
+                    String staffJ = subjectStaffMap.getOrDefault(subjectJ, "");
 
                     // Check if the swap would create a conflict with the global staff section map
-                    if (!staffI.equals(staffJ) || !globalStaffSectionMap.getOrDefault(staffI, Set.of()).contains(section)) {
-                        // Swap the theory subjects
-                        periods.set(i, subjectJ);
-                        periods.set(j, subjectI);
-                    }
+                    // This condition seems overly complex. Let's simplify:
+                    // Only swap if the periods are different and the staff assignments don't conflict
+                    // with the global map for that specific day and period across all sections.
+
+                    // This mutation doesn't directly check global StaffSchedule.
+                    // The collision check is mainly handled in the fitness function and initialization.
+                    // Let's remove the redundant check here for now.
+                    // if (!staffI.equals(staffJ) || !globalStaffSectionMap.getOrDefault(staffI, Set.of()).contains(section)) {
+                    // Swap the theory subjects
+                    periods.set(i, subjectJ);
+                    periods.set(j, subjectI);
+                    // }
                 }
             }
         }
@@ -565,15 +673,20 @@ public class TimeTableGenerator {
         System.out.println("\n--------------------------------------------------------------------------------------");
 
         Map<String, List<String>> timetable = schedule.getTimetable();
+        Map<String, String> shortNames = schedule.getSubjectShortNameMap();
         for (String day : DAYS_OF_WEEK) {
             System.out.printf("| %-10s |", day);
             List<String> periods = timetable.get(day);
             for (String period : periods) {
-                String display = (period == null) ? "FREE" : (period.length() > 6 ? period.substring(0, 6) : period);
+                String display = (period == null) ? "FREE" : shortNames.getOrDefault(period, abbreviate(period)); // Use short name or abbreviate full name
                 System.out.printf(" %-6s |", display);
             }
             System.out.println();
         }
         System.out.println("--------------------------------------------------------------------------------------");
+    }
+
+    private static String abbreviate(String subject) {
+        return subject.length() > 6 ? subject.substring(0, 6) : subject; // Use full name if <= 6 chars
     }
 }
