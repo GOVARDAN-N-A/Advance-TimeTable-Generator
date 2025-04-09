@@ -908,47 +908,53 @@ public class TimeTableGeneratorUI extends Application {
         Printer printer = job.getPrinter();
         PageLayout pageLayout = printer.createPageLayout(Paper.A4, PageOrientation.LANDSCAPE, Printer.MarginType.DEFAULT);
 
-        double scaleX = 1.0, scaleY = 1.0;
-        if (pageLayout != null) {
-            double printableWidth = pageLayout.getPrintableWidth();
-            double printableHeight = pageLayout.getPrintableHeight();
-            double nodeWidth = nodeToPrint.getBoundsInParent().getWidth();
-            double nodeHeight = nodeToPrint.getBoundsInParent().getHeight();
-
-            // Check if the node has a valid size before scaling
-            if (nodeWidth > 0 && nodeHeight > 0) {
-                double scale = Math.min(printableWidth / nodeWidth, printableHeight / nodeHeight);
-                scaleX = scaleY = scale;
-            } else {
-                showAlert("Printing Error", "Timetable content has invalid dimensions.", Alert.AlertType.ERROR);
-                return; // Exit if dimensions are invalid
-            }
-
-
-            // Apply scale transform safely
-            javafx.scene.transform.Scale scaleTransform = new javafx.scene.transform.Scale(scaleX, scaleY);
-            nodeToPrint.getTransforms().add(scaleTransform);
-
-            try {
-                boolean printed = job.printPage(pageLayout, nodeToPrint);
-                if (printed) {
-                    if (job.endJob()) {
-                        showNotification("Printing Complete", "Timetable was successfully sent to the printer.", String.valueOf(Alert.AlertType.INFORMATION));
-                    } else {
-                        showAlert("Printing Error", "Print job did not complete successfully.", Alert.AlertType.ERROR);
-                    }
-                } else {
-                    showAlert("Printing Failed", "Could not print the page.", Alert.AlertType.ERROR);
-                    job.endJob();
-                }
-            } finally {
-                // Always remove the transform, even if print fails
-                nodeToPrint.getTransforms().remove(scaleTransform);
-            }
-        } else {
+        if (pageLayout == null) {
             showAlert("Layout Error", "Could not create page layout for printing.", Alert.AlertType.ERROR);
+            return;
+        }
+
+        double printableWidth = pageLayout.getPrintableWidth();
+        double printableHeight = pageLayout.getPrintableHeight();
+        double nodeWidth = nodeToPrint.getBoundsInParent().getWidth();
+        double nodeHeight = nodeToPrint.getBoundsInParent().getHeight();
+
+        if (nodeWidth <= 0 || nodeHeight <= 0) {
+            showAlert("Printing Error", "Timetable content has invalid dimensions.", Alert.AlertType.ERROR);
+            return;
+        }
+
+        double scale = Math.min(printableWidth / nodeWidth, printableHeight / nodeHeight);
+        javafx.scene.transform.Scale scaleTransform = new javafx.scene.transform.Scale(scale, scale);
+
+        // Optional: Fix rotation for landscape
+        javafx.scene.transform.Rotate rotate = null;
+        if (pageLayout.getPageOrientation() == PageOrientation.LANDSCAPE && nodeWidth < nodeHeight) {
+            rotate = new javafx.scene.transform.Rotate(-90, nodeWidth / 2, nodeHeight / 2); // center rotation
+            nodeToPrint.getTransforms().add(rotate);
+        }
+
+        nodeToPrint.getTransforms().add(scaleTransform);
+
+        try {
+            boolean printed = job.printPage(pageLayout, nodeToPrint);
+            if (printed) {
+                if (job.endJob()) {
+                    showNotification("Printing Complete", "Timetable was successfully sent to the printer.", String.valueOf(Alert.AlertType.INFORMATION));
+                } else {
+                    showAlert("Printing Error", "Print job did not complete successfully.", Alert.AlertType.ERROR);
+                }
+            } else {
+                showAlert("Printing Failed", "Could not print the page.", Alert.AlertType.ERROR);
+                job.endJob();
+            }
+        } finally {
+            nodeToPrint.getTransforms().remove(scaleTransform);
+            if (rotate != null) {
+                nodeToPrint.getTransforms().remove(rotate);
+            }
         }
     }
+
 
 
     // ----------------- Helper: Legend, Grid, Cells (same as before) -----------------
@@ -1303,94 +1309,107 @@ public class TimeTableGeneratorUI extends Application {
     private void updateTimetableGrid(GridPane grid, TimeTableGenerator.Schedule schedule) {
         if (schedule == null) return;
 
-        // Clear previous timetable cells (except headers)
-        grid.getChildren().removeIf(node -> {
-            Integer col = GridPane.getColumnIndex(node);
-            Integer row = GridPane.getRowIndex(node);
-            return col != null && row != null && (col > 0 || row > 0);
-        });
+        grid.getChildren().clear(); // Clear all for full redraw
+        grid.getColumnConstraints().clear(); // Clear old constraints
 
-        Map<String, List<String>> timetable = schedule.getTimetable();
+        // === Grid Appearance ===
+        grid.setHgap(3);
+        grid.setVgap(3);
+        grid.setPadding(new Insets(10));
+        grid.setStyle("-fx-background-color: #ccc; -fx-border-color: #ccc; -fx-border-width: 1;");
 
-        // Fill timetable data
-        for (int i = 0; i < DAYS_OF_WEEK.size(); i++) {
-            String day = DAYS_OF_WEEK.get(i);
-            List<String> daySchedule = timetable.getOrDefault(day, new ArrayList<>());
+        // === Column Constraints ===
+        ColumnConstraints dayCol = new ColumnConstraints();
+        dayCol.setPrefWidth(110);
+        dayCol.setMinWidth(90);
+        grid.getColumnConstraints().add(dayCol);
 
-            for (int j = 0; j < daySchedule.size(); j++) {
-                String subjectName = daySchedule.get(j);
-                Label cell;
-                String color;
-
-//                if (isBreakOrLunch(j)) { // Check if it's a break/lunch period (using index, 0-based)
-//                    cell = new Label(getBreakOrLunchLabel(j));
-//                    color = BREAK_COLOR;
-//                }
-                if (subjectName != null) {
-                    cell = new Label(schedule.getSubjectShortNameMap().getOrDefault(subjectName, subjectName)); // Use short name
-                    color = schedule.getIsLabMap().getOrDefault(subjectName, false) ? LAB_COLOR : THEORY_COLOR;
-                } else {
-                    cell = new Label("FREE");
-                    color = "#f9f9f9"; // Consistent background for free periods
-                }
-
-                cell.setMaxWidth(Double.MAX_VALUE);
-                cell.setMaxHeight(Double.MAX_VALUE);
-                cell.setAlignment(Pos.CENTER);
-                cell.setFont(Font.font("Segoe UI", FontWeight.MEDIUM, 13));
-                cell.setPadding(new Insets(8));
-                cell.setMinHeight(50);
-                cell.setStyle("-fx-background-color: " + color + "; -fx-border-color: #ccc; -fx-border-width: 0.5px;");
-                grid.add(cell, j + 1, i + 1); // +1 to offset for header row/column
-            }
+        for (int i = 1; i <= PERIODS_PER_DAY; i++) {
+            ColumnConstraints periodCol = new ColumnConstraints();
+            periodCol.setPrefWidth(150);
+            periodCol.setMinWidth(130);
+            periodCol.setHgrow(Priority.SOMETIMES);
+            grid.getColumnConstraints().add(periodCol);
         }
 
-        // Re-add header cells with updated colors
-        // Clear previous header cells (day and period)
-        grid.getChildren().removeIf(node -> {
-            Integer row = GridPane.getRowIndex(node);
-            Integer col = GridPane.getColumnIndex(node);
-            return (row != null && row == 0) || (col != null && col == 0);
-        });
-
-        // Header: Day / Period
+        // === Day/Period Header ===
         Label dayHeader = new Label("Day\n/ Period");
         dayHeader.setWrapText(true);
         dayHeader.setTextAlignment(TextAlignment.CENTER);
         dayHeader.setAlignment(Pos.CENTER);
         dayHeader.setFont(Font.font("Segoe UI", FontWeight.BOLD, 12));
         dayHeader.setPadding(new Insets(5));
-        dayHeader.setPrefSize(110, 60); // Adjust size as needed
-        dayHeader.setStyle("-fx-background-color: " + HEADER_COLOR + "; -fx-border-color: #ccc; -fx-border-width: 0.5px; -fx-text-fill: white;"); // Apply teal blue
+        dayHeader.setPrefSize(110, 60);
+        dayHeader.setStyle("-fx-background-color: #007b8a; -fx-border-color: #ccc; -fx-border-width: 0.5px; -fx-text-fill: white;");
         GridPane.setHalignment(dayHeader, HPos.CENTER);
         GridPane.setValignment(dayHeader, VPos.CENTER);
         grid.add(dayHeader, 0, 0);
 
-        // Add time headers
-        for (int i = 0; i < PERIODS_PER_DAY; i++) {
-            String timeRange = getTimeRangeLabel(i);
-            Label timeLabel = new Label("P" + (i + 1) + "\n" + timeRange);
-            timeLabel.setFont(Font.font("Segoe UI", FontWeight.BOLD, 11));
-            timeLabel.setWrapText(true);
-            timeLabel.setTextAlignment(TextAlignment.CENTER);
-            timeLabel.setPadding(new Insets(5));
-            timeLabel.setMinHeight(60);
-            timeLabel.setAlignment(Pos.CENTER);
-            timeLabel.setStyle("-fx-background-color: " + HEADER_COLOR + "; -fx-border-color: #ccc; -fx-border-width: 0.5px; -fx-text-fill: white;"); // Apply teal blue
-            GridPane.setHalignment(timeLabel, HPos.CENTER);
-            grid.add(timeLabel, i + 1, 0);
+        // === Period Headers ===
+        for (int i = 1; i <= PERIODS_PER_DAY; i++) {
+            String timeRange = getTimeRangeLabel(i - 1);
+            Label periodLabel = new Label("P" + i + "\n" + timeRange);
+            periodLabel.setWrapText(true);
+            periodLabel.setTextAlignment(TextAlignment.CENTER);
+            periodLabel.setAlignment(Pos.CENTER);
+            periodLabel.setFont(Font.font("Segoe UI", FontWeight.BOLD, 11));
+            periodLabel.setMinHeight(60);
+            periodLabel.setMaxWidth(Double.MAX_VALUE);
+            periodLabel.setStyle("-fx-background-color: #007b8a; -fx-border-color: #ccc; -fx-border-width: 0.5px; -fx-text-fill: white;");
+            GridPane.setHalignment(periodLabel, HPos.CENTER);
+            grid.add(periodLabel, i, 0);
         }
 
-        // Add day headers
+        // === Fill each row for days ===
+        Map<String, List<String>> timetable = schedule.getTimetable();
+
         for (int i = 0; i < DAYS_OF_WEEK.size(); i++) {
-            Label dayLabel = new Label(DAYS_OF_WEEK.get(i));
+            String day = DAYS_OF_WEEK.get(i);
+            List<String> daySchedule = timetable.getOrDefault(day, new ArrayList<>());
+
+            // Day Header
+            Label dayLabel = new Label(day);
             dayLabel.setFont(Font.font("Segoe UI", FontWeight.BOLD, 13));
-            dayLabel.setPadding(new Insets(5));
             dayLabel.setAlignment(Pos.CENTER_LEFT);
-            dayLabel.setMinHeight(50);
-            dayLabel.setStyle("-fx-background-color: " + SECONDARY_COLOR + "; -fx-border-color: #ccc; -fx-border-width: 0.5px; -fx-text-fill: white;"); // Apply secondary color
+            dayLabel.setPadding(new Insets(5));
+            dayLabel.setPrefSize(110, 50);
+            dayLabel.setStyle("-fx-background-color: #007b8a; -fx-border-color: #ccc; -fx-border-width: 0.5px; -fx-text-fill: white;");
             grid.add(dayLabel, 0, i + 1);
+
+            // Period Cells
+            for (int j = 0; j < PERIODS_PER_DAY; j++) {
+                String subjectName = (j < daySchedule.size()) ? daySchedule.get(j) : null;
+                Label cell;
+                String bgColor;
+
+                if (subjectName != null) {
+                    String shortName = schedule.getSubjectShortNameMap().getOrDefault(subjectName, subjectName);
+                    boolean isLab = schedule.getIsLabMap().getOrDefault(subjectName, false);
+                    bgColor = isLab ? "#cfe2f3" : "#dff0d8";
+                    cell = new Label(shortName);
+                } else {
+                    bgColor = "#f5f5f5";
+                    cell = new Label("FREE");
+                }
+
+                cell.setPrefSize(150, 50);
+                cell.setMinSize(150, 50);
+                cell.setWrapText(true);
+                cell.setAlignment(Pos.CENTER);
+                cell.setTextAlignment(TextAlignment.CENTER);
+                cell.setFont(Font.font("Segoe UI", FontWeight.SEMI_BOLD, 12));
+                cell.setPadding(new Insets(5));
+                cell.setStyle("-fx-background-color: " + bgColor + "; -fx-border-color: #ccc; -fx-border-width: 0.5px; -fx-text-fill: #222222;");
+                grid.add(cell, j + 1, i + 1);
+            }
         }
+
+        // === Optional Drop Shadow ===
+        DropShadow ds = new DropShadow();
+        ds.setRadius(6.0);
+        ds.setOffsetY(4.0);
+        ds.setColor(Color.rgb(0, 0, 0, 0.2));
+        grid.setEffect(ds);
     }
 
 
@@ -1530,6 +1549,8 @@ public class TimeTableGeneratorUI extends Application {
         dayHeader.setFont(Font.font("Segoe UI", FontWeight.BOLD, 12));
         dayHeader.setPadding(new Insets(5));
         dayHeader.setPrefSize(110, 60);
+        dayHeader.setMinSize(110, 60);
+        dayHeader.setMaxSize(110, 60);
         dayHeader.setStyle("-fx-background-color: " + HEADER_COLOR + "; -fx-border-color: #ccc; -fx-border-width: 0.5px; -fx-text-fill: white;");
         GridPane.setHalignment(dayHeader, HPos.CENTER);
         GridPane.setValignment(dayHeader, VPos.CENTER);
@@ -1713,9 +1734,10 @@ public class TimeTableGeneratorUI extends Application {
                             for (int j = 0; j < PERIODS_PER_DAY; j++) {
                                 String subjectName = daySchedule.get(j);
                                 String cellContent;
-                                if (isBreakOrLunch(j)) {
-                                    cellContent = getBreakOrLunchLabel(j);
-                                } else if (subjectName != null) {
+//                                if (isBreakOrLunch(j)) {
+//                                    cellContent = getBreakOrLunchLabel(j);
+//                                }
+                                 if (subjectName != null) {
                                     cellContent = schedule.getSubjectShortNameMap().getOrDefault(subjectName, subjectName);
                                 } else {
                                     cellContent = "FREE";
